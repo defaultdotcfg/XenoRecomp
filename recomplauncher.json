@@ -1,0 +1,38 @@
+{
+  "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
+  "format": 1,
+  "name": "XenoRecomp",
+  "repo": "defaultdotcfg/XenoRecomp",
+  "inputs": [
+    {
+      "id": "game",
+      "label": "Your own Xenowerk 2.0.7 iOS .ipa file (the recompiled game only works with that version).",
+      "formats": [{ "type": "file", "extensions": ["ipa"] }]
+    }
+  ],
+  "prepare": {
+    "program": ["xenowerk.exe"],
+    "args": ["--prepare", "--game", "{input:game}", "--data", "{data}"],
+    "label": "Unpacking the game's files from your IPA",
+    "done": ["{data}/game/Xenowerk.app/Xenowerk"]
+  },
+  "start": {
+    "program": ["xenowerk.exe"],
+    "args": ["--data", "{data}"],
+    "env": { "XW_KBM": "1" }
+  },
+  "saves": ["{data}/save"],
+  "folders": {
+    "saves": [{ "path": "{data}/save" }],
+    "logs": [{ "path": "{data}/game/Xenowerk.app" }]
+  },
+  "exit_codes": {
+    "1": "The launcher couldn't read your IPA. Pick it again on the game's page.",
+    "2": "That file isn't a valid IPA. Pick your Xenowerk 2.0.7 .ipa file.",
+    "3": "That IPA has no game inside (Payload/*.app). Pick your Xenowerk 2.0.7 .ipa file.",
+    "14": "Unpacking the game failed: the IPA looks damaged or the drive is full.",
+    "15": "Unpacking the game failed: the IPA looks damaged or the drive is full.",
+    "16": "Unpacking the game failed: the IPA uses a compression this version can't read.",
+    "17": "Unpacking the game failed: couldn't write the files. Check the free space on the drive."
+  }
+}
