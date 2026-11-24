@@ -41,7 +41,7 @@ class Launcher : Form
     ComboBox cbRes, cbAspect, cbScale, cbFilter; NumericUpDown nudW, nudH; TrackBar tb, tbDead; Label lbPct, lbDead, lbInfo; CheckBox ckVsync, ckProf; ComboBox cbFps, cbLang, cbGLang; CheckBox ckUpd;
     static readonly string[] GLangCode = { "", "en", "pt", "es", "fr", "de", "it" };
 
-    const string AppVersion = "0.1";
+    const string AppVersion = "0.2";
     const string RepoSlug = "defaultdotcfg/XenoRecomp";          // "owner/repo" of the GitHub project that publishes the releases; empty = update check disabled
     static string T(string pt) { return I18n.T(pt); }
 

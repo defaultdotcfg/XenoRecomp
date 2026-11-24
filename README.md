@@ -1,10 +1,18 @@
 # XenoRecomp
 
+<a href="https://recomplauncher.com"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/launcher/badge-light.svg"><img alt="Get it on RecompLauncher" src="https://recomplauncher.com/assets/press/launcher/badge-dark.svg" height="48"></picture></a>
+
 Static recompilation of the iOS game **Xenowerk 2.0.7** to a native Windows x64 executable, plus a launcher.
 
 **This project does not include the game's assets.** You need your own legitimate copy of the game's `.ipa`.
 
-## Usage
+## How to play
+You need your own copy of the game: the **Xenowerk 2.0.7 iOS `.ipa`** (not included).
+
+- **With [RecompLauncher](https://recomplauncher.com):** install XenoRecomp, pick your `.ipa` on the setup screen and press Play. Saves go to the game's `recompdata/save` folder.
+- **With the included launcher:** see below.
+
+## Usage (included launcher)
 1. Download `XenoRecomp-v0.1.zip` from the Releases page and extract it anywhere.
 2. Run `Launcher.exe`, click **Importar IPA... / Import IPA...** and select your Xenowerk 2.0.7 `.ipa`.
 3. Click **Play**.
