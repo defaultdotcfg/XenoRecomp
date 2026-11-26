@@ -41,12 +41,58 @@ class Launcher : Form
     ComboBox cbRes, cbAspect, cbScale, cbFilter; NumericUpDown nudW, nudH; TrackBar tb, tbDead; Label lbPct, lbDead, lbInfo; CheckBox ckVsync, ckProf; ComboBox cbFps, cbLang, cbGLang; CheckBox ckUpd;
     static readonly string[] GLangCode = { "", "en", "pt", "es", "fr", "de", "it" };
 
-    const string AppVersion = "0.2";
+    const string AppVersion = "0.3";
     const string RepoSlug = "defaultdotcfg/XenoRecomp";          // "owner/repo" of the GitHub project that publishes the releases; empty = update check disabled
     static string T(string pt) { return I18n.T(pt); }
 
     [STAThread]
-    static void Main() { Application.EnableVisualStyles(); Application.Run(new Launcher()); }
+    static int Main(string[] args)
+    {
+        if (Array.IndexOf(args, "--prepare") >= 0) return Prepare(args);
+        Application.EnableVisualStyles(); Application.Run(new Launcher()); return 0;
+    }
+
+    // RecompLauncher's setup step (no window): Launcher.exe --prepare [--game=<file.ipa>] [--data <dir>]
+    // Unpacks the game into <data>\game and builds xenowerk.exe next to the launcher. Without --game it builds again
+    // from the copy already unpacked there. Prints "progress <0..1> <text>" lines; the reason of a failure is printed last.
+    static int Prepare(string[] args)
+    {
+        string game = null, data = null, self = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--game" && i + 1 < args.Length) game = args[++i];
+            else if (args[i].StartsWith("--game=")) game = args[i].Substring(7);
+            else if (args[i] == "--data" && i + 1 < args.Length) data = args[++i];
+            else if (args[i].StartsWith("--data=")) data = args[i].Substring(7);
+        }
+        // the setup step's output is read as UTF-8 (accents in the translated messages)
+        Console.SetOut(new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true });
+        Console.SetError(new StreamWriter(Console.OpenStandardError(), new UTF8Encoding(false)) { AutoFlush = true });
+        if (string.IsNullOrEmpty(data)) data = Environment.GetEnvironmentVariable("RECOMPLAUNCHER_DATA");
+        if (string.IsNullOrEmpty(data)) data = self;
+        data = Path.GetFullPath(data);
+        Builder.Progress pr = (f, t) => { Console.WriteLine("progress " + f.ToString("0.###", CultureInfo.InvariantCulture) + " " + t); Console.Out.Flush(); };
+        try
+        {
+            Directory.CreateDirectory(data);
+            string gameRoot = Path.Combine(data, "game"), app = null;
+            if (!string.IsNullOrEmpty(game) && game.EndsWith(".ipa", StringComparison.OrdinalIgnoreCase))
+            {
+                pr(0, T("Extraindo o jogo do IPA"));
+                app = ExtractIpa(game, gameRoot, p => pr(0, T("Extraindo o jogo do IPA") + " (" + p + "%)"));
+            }
+            else if (!string.IsNullOrEmpty(game) && Directory.Exists(game)) app = Path.GetFullPath(game);
+            else if (Directory.Exists(gameRoot))
+                foreach (var d in Directory.GetDirectories(gameRoot, "*.app")) if (File.Exists(Path.Combine(d, "Xenowerk"))) { app = d; break; }
+            if (app == null) throw new BuildError(2, T("Escolha o .ipa do Xenowerk 2.0.7."));
+            if (Builder.IsBuilt(self, app)) { pr(1, T("Jogo já preparado")); return 0; }
+            Builder.Build(self, data, app, pr, () => false);
+            return 0;
+        }
+        catch (BuildError e) { Console.Out.Flush(); Console.Error.WriteLine(e.Message); return e.Code; }
+        catch (PathTooLongException e) { Console.Error.WriteLine(e.ToString()); return 27; }
+        catch (Exception e) { Console.Error.WriteLine(e.ToString()); Console.Error.WriteLine(T("A preparação falhou: ") + e.Message); return 27; }
+    }
 
     string Get(string k, string d) { string v; return cfg.TryGetValue(k, out v) ? v : d; }
     int GetInt(string k, int d) { int v; return int.TryParse(Get(k, d.ToString()), out v) ? v : d; }
@@ -359,7 +405,58 @@ class Launcher : Form
     }
 
     string FpsVal() { return new[] { "30", "60", "90", "120", "144", "165", "240", "0" }[Math.Max(0, cbFps.SelectedIndex)]; }
-    // Extracts Payload/<name>.app from an .ipa (a zip) into <launcher dir>\game and points the launcher at it.
+    // Finds Payload/<name>.app in an .ipa (a zip). Returns its prefix ("Payload/Xenowerk.app/") and whether Info.plist says Xenowerk 2.0.7.
+    static string IpaApp(ZipArchive zip, out bool known)
+    {
+        known = false;
+        foreach (var en in zip.Entries)
+        {
+            var n = en.FullName; if (!n.StartsWith("Payload/", StringComparison.OrdinalIgnoreCase)) continue;
+            int i = n.IndexOf('/', 8); if (i < 0) continue;
+            string top = n.Substring(0, i + 1);
+            if (!top.EndsWith(".app/", StringComparison.OrdinalIgnoreCase) || zip.GetEntry(top + "Info.plist") == null) continue;
+            byte[] pb;
+            using (var ms = new MemoryStream()) { using (var st = zip.GetEntry(top + "Info.plist").Open()) st.CopyTo(ms); pb = ms.ToArray(); }
+            string txt = Encoding.ASCII.GetString(pb);
+            known = txt.IndexOf("com.", StringComparison.Ordinal) >= 0 && txt.IndexOf("2.0.7", StringComparison.Ordinal) >= 0 && txt.IndexOf("enowerk", StringComparison.Ordinal) >= 0;
+            return top;
+        }
+        return null;
+    }
+
+    // Extracts Payload/<name>.app from an .ipa into <root>\<name>.app (replacing an older copy) and returns that folder.
+    // Errors carry the exit codes recomplauncher.json describes.
+    static string ExtractIpa(string ipa, string root, Action<int> pct)
+    {
+        ZipArchive zip;
+        try { zip = ZipFile.OpenRead(ipa); }
+        catch (InvalidDataException) { throw new BuildError(2, T("Este arquivo não parece um IPA válido. Escolha o .ipa do Xenowerk 2.0.7.")); }
+        catch (Exception e) { throw new BuildError(1, T("Não consegui ler o IPA: ") + e.Message); }
+        using (zip)
+        {
+            bool known; string appPrefix = IpaApp(zip, out known);
+            if (appPrefix == null) throw new BuildError(3, T("Este arquivo não parece um IPA válido (não há Payload/*.app com Info.plist)."));
+            string dest = Path.GetFullPath(Path.Combine(root, appPrefix.Substring(8, appPrefix.Length - 9)));
+            if (Directory.Exists(dest)) Directory.Delete(dest, true);
+            int total = 0, done = 0; foreach (var en in zip.Entries) if (en.FullName.StartsWith(appPrefix, StringComparison.Ordinal) && en.Name != "") total++;
+            string destSep = dest.TrimEnd('\\') + "\\";
+            foreach (var en in zip.Entries)
+            {
+                if (!en.FullName.StartsWith(appPrefix, StringComparison.Ordinal) || en.Name == "") continue;
+                string target = Path.GetFullPath(Path.Combine(dest, en.FullName.Substring(appPrefix.Length).Replace('/', '\\')));
+                if (!target.StartsWith(destSep, StringComparison.OrdinalIgnoreCase)) continue;     // never write outside the game folder
+                try { Directory.CreateDirectory(Path.GetDirectoryName(target)); en.ExtractToFile(target, true); }
+                catch (InvalidDataException) { throw new BuildError(14, T("A extração do jogo falhou: o IPA parece danificado.")); }
+                catch (NotSupportedException) { throw new BuildError(16, T("A extração do jogo falhou: o IPA usa uma compressão que esta versão não lê.")); }
+                catch (IOException e) { throw new BuildError(17, T("A extração do jogo falhou: não consegui gravar os arquivos. Verifique o espaço livre no disco.") + "\n" + e.Message); }
+                if (++done % 25 == 0 && pct != null) pct(done * 100 / Math.Max(1, total));
+            }
+            if (!File.Exists(Path.Combine(dest, "Xenowerk"))) throw new BuildError(3, T("Extração concluída, mas o executável 'Xenowerk' não está no IPA. Verifique se é o IPA correto."));
+            return dest;
+        }
+    }
+
+    // Extracts the .ipa into <launcher dir>\game, points the launcher at it and builds xenowerk.exe from it.
     void ImportIpa()
     {
         string ipa;
@@ -369,56 +466,63 @@ class Launcher : Form
         try
         {
             Cursor = Cursors.WaitCursor; Enabled = false;
-            using (var zip = ZipFile.OpenRead(ipa))
-            {
-                string appPrefix = null;
-                foreach (var en in zip.Entries)
-                {
-                    var n = en.FullName; if (!n.StartsWith("Payload/", StringComparison.OrdinalIgnoreCase)) continue;
-                    int i = n.IndexOf('/', 8); if (i < 0) continue;
-                    string top = n.Substring(0, i + 1);
-                    if (top.EndsWith(".app/", StringComparison.OrdinalIgnoreCase) && zip.GetEntry(top + "Info.plist") != null) { appPrefix = top; break; }
-                }
-                if (appPrefix == null) { MessageBox.Show(T("Este arquivo não parece um IPA válido (não há Payload/*.app com Info.plist)."), "Xenowerk", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
-                string appName = appPrefix.Substring(8, appPrefix.Length - 9);
-                var plist = zip.GetEntry(appPrefix + "Info.plist"); byte[] pb;
-                using (var ms = new MemoryStream()) { using (var st = plist.Open()) st.CopyTo(ms); pb = ms.ToArray(); }
-                string txt = Encoding.ASCII.GetString(pb);
-                bool known = txt.IndexOf("com.", StringComparison.Ordinal) >= 0 && txt.IndexOf("2.0.7", StringComparison.Ordinal) >= 0 && txt.IndexOf("enowerk", StringComparison.Ordinal) >= 0;
-                if (!known && MessageBox.Show(T("Não consegui confirmar que este IPA é o Xenowerk 2.0.7 (o recompilado só funciona com essa versão). Extrair mesmo assim?"), "Xenowerk", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
-                string root = Path.Combine(dir, "game"), dest = Path.GetFullPath(Path.Combine(root, appName));
-                if (Directory.Exists(dest))
-                {
-                    if (MessageBox.Show(T("Já existe um jogo extraído em:\n") + dest + T("\n\nSubstituir? (os saves em save\\ não são afetados)"), "Xenowerk", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
-                    Directory.Delete(dest, true);
-                }
-                int total = 0, done = 0; foreach (var en in zip.Entries) if (en.FullName.StartsWith(appPrefix, StringComparison.Ordinal) && en.Name != "") total++;
-                string destSep = dest.TrimEnd('\\') + "\\";
-                foreach (var en in zip.Entries)
-                {
-                    if (!en.FullName.StartsWith(appPrefix, StringComparison.Ordinal) || en.Name == "") continue;
-                    string target = Path.GetFullPath(Path.Combine(dest, en.FullName.Substring(appPrefix.Length).Replace('/', '\\')));
-                    if (!target.StartsWith(destSep, StringComparison.OrdinalIgnoreCase)) continue;     // never write outside the game folder
-                    Directory.CreateDirectory(Path.GetDirectoryName(target));
-                    en.ExtractToFile(target, true);
-                    if (++done % 25 == 0) { lbApp.Text = T("Extraindo... ") + (done * 100 / Math.Max(1, total)) + "%"; Application.DoEvents(); }
-                }
-                if (!File.Exists(Path.Combine(dest, "Xenowerk")))
-                { MessageBox.Show(T("Extração concluída, mas o executável 'Xenowerk' não está no IPA. Verifique se é o IPA correto."), "Xenowerk", MessageBoxButtons.OK, MessageBoxIcon.Warning); lbApp.Text = old; return; }
-                lbApp.Text = dest; SaveCfg();
-                MessageBox.Show(T("Jogo extraído em:\n") + dest, "Xenowerk", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                old = null;
-            }
+            bool known; string prefix;
+            try { using (var zip = ZipFile.OpenRead(ipa)) prefix = IpaApp(zip, out known); }
+            catch (Exception) { MessageBox.Show(T("Este arquivo não parece um IPA válido. Escolha o .ipa do Xenowerk 2.0.7."), "Xenowerk", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
+            if (prefix == null) { MessageBox.Show(T("Este arquivo não parece um IPA válido (não há Payload/*.app com Info.plist)."), "Xenowerk", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
+            if (!known && MessageBox.Show(T("Não consegui confirmar que este IPA é o Xenowerk 2.0.7 (o recompilado só funciona com essa versão). Extrair mesmo assim?"), "Xenowerk", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+            string root = Path.Combine(dir, "game"), dest = Path.GetFullPath(Path.Combine(root, prefix.Substring(8, prefix.Length - 9)));
+            if (Directory.Exists(dest) && MessageBox.Show(T("Já existe um jogo extraído em:\n") + dest + T("\n\nSubstituir? (os saves em save\\ não são afetados)"), "Xenowerk", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            dest = ExtractIpa(ipa, root, p => { lbApp.Text = T("Extraindo... ") + p + "%"; Application.DoEvents(); });
+            lbApp.Text = dest; SaveCfg(); old = null;
         }
-        catch (Exception ex) { MessageBox.Show(T("Falha ao importar o IPA:\n") + ex.Message, "Xenowerk", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        catch (BuildError ex) { MessageBox.Show(ex.Message, "Xenowerk", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
+        catch (Exception ex) { MessageBox.Show(T("Falha ao importar o IPA:\n") + ex.Message, "Xenowerk", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
         finally { Enabled = true; Cursor = Cursors.Default; if (old != null) lbApp.Text = old; }
+        if (BuildGame(lbApp.Text)) MessageBox.Show(T("Jogo pronto. Aperte JOGAR."), "Xenowerk", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    // Builds xenowerk.exe from the game in app (window with progress and Cancel). True when it's ready.
+    bool BuildGame(string app)
+    {
+        if (Builder.IsBuilt(dir, app)) return true;
+        bool cancel = false, ok = false; string err = null;
+        using (var f = new Form { Text = T("Preparando o jogo"), ClientSize = new Size(420, 132), StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, ControlBox = false, Font = Font })
+        {
+            f.Controls.Add(new Label { Text = T("O código do jogo é traduzido e compilado a partir do seu IPA. Só acontece na primeira vez (e após atualizações); leva alguns minutos."), Location = new Point(12, 10), Size = new Size(396, 34) });
+            var lb = new Label { Location = new Point(12, 50), Size = new Size(396, 18), AutoEllipsis = true };
+            var pb = new ProgressBar { Location = new Point(12, 70), Size = new Size(396, 18), Maximum = 1000 };
+            var bc = new Button { Text = T("Cancelar"), Location = new Point(316, 98), Width = 92 };
+            bc.Click += (s, e) => { cancel = true; bc.Enabled = false; lb.Text = T("Cancelando..."); };
+            f.Controls.AddRange(new Control[] { lb, pb, bc });
+            long lastTick = 0;
+            Builder.Progress pr = (x, t) =>
+            {
+                long now = Environment.TickCount; if (x < 1 && now - Interlocked.Read(ref lastTick) < 100) return; Interlocked.Exchange(ref lastTick, now);
+                try { f.BeginInvoke((MethodInvoker)(() => { if (!cancel) lb.Text = t; pb.Value = Math.Max(0, Math.Min(1000, (int)(x * 1000))); })); } catch { }
+            };
+            f.Shown += (s, e) =>
+            {
+                var th = new Thread(() =>
+                {
+                    try { Builder.Build(dir, dir, app, pr, () => cancel); ok = true; }
+                    catch (BuildError ex) { if (ex.Code != 26) err = ex.Message; }
+                    catch (Exception ex) { err = T("A preparação falhou: ") + ex.Message; }
+                    try { f.BeginInvoke((MethodInvoker)(() => f.Close())); } catch { }
+                });
+                th.IsBackground = true; th.Start();
+            };
+            f.ShowDialog(this);
+        }
+        if (err != null) MessageBox.Show(err, T("Preparando o jogo"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+        return ok;
     }
 
     void Play()
     {
         string exe = Path.Combine(dir, "xenowerk.exe"), app = lbApp.Text;
         if (!File.Exists(Path.Combine(app, "Xenowerk"))) { MessageBox.Show(T("Jogo não encontrado. Use \"Importar IPA...\" (o .ipa do Xenowerk 2.0.7) ou \"Pasta...\" (pasta Xenowerk.app já extraída)."), "Xenowerk", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
-        if (!File.Exists(exe)) { MessageBox.Show("xenowerk.exe não encontrado ao lado do launcher.", "Xenowerk", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
+        if (!BuildGame(app)) return;
         SaveCfg();
         var psi = new ProcessStartInfo(exe, "\"" + app + "\"") { WorkingDirectory = dir, UseShellExecute = false, CreateNoWindow = true };
         var e = psi.EnvironmentVariables;

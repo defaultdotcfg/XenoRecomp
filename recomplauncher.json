@@ -11,10 +11,11 @@
     }
   ],
   "prepare": {
-    "program": ["xenowerk.exe"],
-    "args": ["--prepare", "--game", "{input:game}", "--data", "{data}"],
-    "label": "Unpacking the game's files from your IPA",
-    "done": ["{data}/game/Xenowerk.app/Xenowerk"]
+    "program": ["Launcher.exe"],
+    "args": ["--prepare", "--game={input:game}", "--data", "{data}"],
+    "label": "Building the game from your IPA (the first time it downloads about 115 MB of tools and takes a few minutes)",
+    "keeps_copy": true,
+    "done": ["{data}/game/Xenowerk.app/Xenowerk", "{install}/xenowerk.exe", "{install}/xenowerk.build"]
   },
   "start": {
     "program": ["xenowerk.exe"],
@@ -31,8 +32,14 @@
     "2": "That file isn't a valid IPA. Pick your Xenowerk 2.0.7 .ipa file.",
     "3": "That IPA has no game inside (Payload/*.app). Pick your Xenowerk 2.0.7 .ipa file.",
     "14": "Unpacking the game failed: the IPA looks damaged or the drive is full.",
-    "15": "Unpacking the game failed: the IPA looks damaged or the drive is full.",
     "16": "Unpacking the game failed: the IPA uses a compression this version can't read.",
-    "17": "Unpacking the game failed: couldn't write the files. Check the free space on the drive."
+    "17": "Unpacking the game failed: couldn't write the files. Check the free space on the drive.",
+    "20": "Couldn't download the build tools. Check your internet connection and press Set Up again.",
+    "21": "A build tool download was damaged. Press Set Up again.",
+    "22": "Translating the game's code failed. Make sure you picked the Xenowerk 2.0.7 .ipa file.",
+    "23": "Compiling the game failed. Press Copy and send the lines on the XenoRecomp issues page.",
+    "24": "Not enough free space on the game's drive (about 1.5 GB is needed for the build).",
+    "25": "This install is incomplete (the recomp folder is missing). Reinstall XenoRecomp.",
+    "27": "The setup step failed. Press Copy and send the lines on the XenoRecomp issues page."
   }
 }
